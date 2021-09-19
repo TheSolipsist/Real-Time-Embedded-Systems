@@ -6,8 +6,8 @@
 
 #define QUEUESIZE 10
 #define LOOP 1000
-#define N_PRODUCERS 4
-/* Uncomment the following line if not using the -D N_CONSUMERS X preprocessing option
+#define N_PRODUCERS 512
+/* Uncomment the following line if not using the -D N_CONSUMERS=X preprocessing option
 #define N_CONSUMERS 16
 */
 
