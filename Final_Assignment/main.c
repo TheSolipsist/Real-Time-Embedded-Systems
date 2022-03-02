@@ -6,17 +6,31 @@
 #include <time.h>
 #include <inttypes.h>
 
-// If a larger number is required, change the data type of random_index in BTnearMe()
-#define N_MACADDRESSES 2000
-#define SEARCH_INTERVAL 10
+#define N_MACADDRESSES 2000 // If a much larger number is required, check the data type of random_index in BTnearMe()
+
+// Time interval parameters
+const double speed_factor = 0.01; // 0.01 means the code will run 100x faster
+const double search_interval = 10 * speed_factor;
+const double save_recent = 4 * 60 * speed_factor;
+const double forget_recent = 16 * 60 * speed_factor;
+const double forget_contacts = 14 * 24 * 60 * 60 * speed_factor;
+const double test_interval = 4 * 60 * 60 * speed_factor;
 
 struct macaddress
 {
     uint64_t value : 48;
 };
 
+typedef struct
+{
+    struct macaddress *buffer;
+    uint16_t head, tail, size;
+
+} queue;
+
 static struct macaddress macaddress_list[N_MACADDRESSES];
-static struct macaddress *recent_contacts;
+static queue *recent_contacts;
+static queue *close_contacts;
 static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
@@ -43,6 +57,7 @@ int main()
 
     pthread_t mac_search;
     pthread_t covid_test;
+
 
     init_macaddress_list();
 
