@@ -9,7 +9,7 @@
 
 #define N_MACADDRESSES 2000 // If a much larger number is required, check the data type of random_index in BTnearMe()
 #define MAX_CONCURRENT_BTNEARME 5000 // Max number of possible concurrent threads for new macaddresses
-#define MAX_CLOSE_CONTACTS 150000 // Max number of possible concurrent threads for close contacts (including duplicates)
+#define MAX_CONCURRENT_CLOSE_CONTACTS 150000 // Max number of possible concurrent threads for close contacts (including duplicates)
 #define MAX_BTNEARME_CALLS 300000
 #define MAX_TESTCOVID_CALLS 500
 
@@ -40,7 +40,6 @@ struct timespec save_recent;
 struct timespec forget_recent;
 struct timespec forget_contacts;
 struct timespec test_interval;
-struct timespec program_timeout;
 
 typedef struct
 {
@@ -54,7 +53,6 @@ typedef struct
     int mins;
     int secs;
     long nanosecs;
-
 } time_format;
 
 typedef struct
@@ -80,13 +78,19 @@ typedef struct
     pthread_t *pt_buf;
     uint16_t head, tail;
     bool empty;
+    pthread_mutex_t mut;
+    pthread_cond_t not_empty_cond;
 } pthread_queue;
+
+typedef struct
+{
+    pthread_queue *new_mac_queue;
+    pthread_queue *close_contacts_queue;
+} two_queues;
 
 macaddress macaddress_list[N_MACADDRESSES];
 btnearme_history_struct btnearme_history[MAX_BTNEARME_CALLS];
 testCovid_history_struct testCovid_history[MAX_TESTCOVID_CALLS];
-pthread_queue pt_new_mac;
-pthread_queue pt_close_contacts;
 // recent_contacts holds the number of times that each macaddress has been seen 4-20 minutes ago
 uint16_t recent_contacts[N_MACADDRESSES] = {0};
 uint32_t close_contacts[N_MACADDRESSES] = {0};
@@ -94,15 +98,11 @@ uint32_t close_contacts[N_MACADDRESSES] = {0};
 uint32_t btnearme_history_index = 0;
 uint32_t testCovid_history_index = 0;
 
-pthread_mutex_t contacts_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t orchestrator_mutex = PTHREAD_MUTEX_INITIALIZER;
-
+pthread_mutex_t recent_contacts_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t close_contacts_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t program_timeout_cond = PTHREAD_COND_INITIALIZER;
-pthread_cond_t update_contacts_started_cond = PTHREAD_COND_INITIALIZER;
-pthread_cond_t pt_not_empty_cond = PTHREAD_COND_INITIALIZER;
 
 bool program_ended = false;
-bool update_contacts_started = false;
 
 struct timespec program_start_time;
 struct timespec next_BTnearMe_time;
@@ -131,11 +131,9 @@ void timespec_add(struct timespec *a, struct timespec *b, struct timespec *resul
 }
 
 void timespec_to_time_format(struct timespec timestamp, time_format *converted_timestamp) {
-    // Converts a timespec to time_format
-    // Inputs: the timespec, a reference to the time_format that will store the result
     // Form the seconds of the day
     long hms = timestamp.tv_sec % SEC_PER_DAY;
-    // mod `hms` to insure in positive range of [0...SEC_PER_DAY)
+    // mod `hms` to ensure it is in positive range of [0...SEC_PER_DAY)
     hms = (hms + SEC_PER_DAY) % SEC_PER_DAY;
 
     // Tear apart hms into h:m:s
@@ -164,13 +162,10 @@ macaddress_time *BTnearMe()
     macaddress_time *newBT = malloc(sizeof(macaddress_time));
     // Get a random macaddress from macaddress_list
     uint16_t random_index = rand() % N_MACADDRESSES;
-    // Time from the start of the program
     struct timespec current_time;
     clock_gettime(CLOCK_MONOTONIC, &current_time);
     timespec_diff(&current_time, &program_start_time, &(newBT->timestamp));
-    // Macaddress
     newBT->cur_macaddress = macaddress_list[random_index];
-
     // Save info to history
     if(btnearme_history_index < MAX_BTNEARME_CALLS)
     {
@@ -178,8 +173,9 @@ macaddress_time *BTnearMe()
         btnearme_history[btnearme_history_index++].generated_macaddress = newBT->cur_macaddress;
     }
     else
+    {
         printf("overflow in btnearme_history");
-    
+    }
     return newBT;
 }
 
@@ -187,9 +183,9 @@ macaddress_time *BTnearMe()
 bool testCOVID()
 {
     // Get a random positive (10%) or negative(90%) covid test
-    float res = (rand() % 10001) / 10000.0 ;
+    float res = (rand() % 10001) / 10000.0;
     bool test_res;
-    test_res = res <= 0.1 ? true : false ;
+    test_res = res <= 0.4 ? true : false;
 
     // Save info to history
     if(testCovid_history_index < MAX_TESTCOVID_CALLS)
@@ -202,8 +198,9 @@ bool testCOVID()
         testCovid_history[testCovid_history_index++].testCovidResult = test_res;
     }
     else
-        printf("overflow in testCovid_history");
-
+    {
+        printf("Overflow in testCovid_history\n");
+    }
     return test_res;
 }
 
@@ -237,69 +234,101 @@ void *new_macaddress_thread_func(void *macaddress_time_obj)
 {
     macaddress_time *cur_macaddress_time_obj = (macaddress_time*)macaddress_time_obj;
     struct timespec next_time;
-    pthread_mutex_lock(&contacts_mutex);
+    pthread_mutex_lock(&recent_contacts_mutex);
     if (program_ended)
     {
         free(macaddress_time_obj);
-        pthread_mutex_unlock(&contacts_mutex);
+        pthread_mutex_unlock(&recent_contacts_mutex);
         return NULL;
     }
     // Save to recent contacts
     timespec_add(&(cur_macaddress_time_obj->timestamp), &save_recent, &next_time);
-    pthread_cond_timedwait(&program_timeout_cond, &contacts_mutex, &next_time);
+    pthread_cond_timedwait(&program_timeout_cond, &recent_contacts_mutex, &next_time);
     if (program_ended)
     {
         free(macaddress_time_obj);
-        pthread_mutex_unlock(&contacts_mutex);
+        pthread_mutex_unlock(&recent_contacts_mutex);
         return NULL;
     }
     recent_contacts[cur_macaddress_time_obj->cur_macaddress.value] += 1;
     // Delete from recent contacts
     timespec_add(&(cur_macaddress_time_obj->timestamp), &forget_recent, &next_time);
-    pthread_cond_timedwait(&program_timeout_cond, &contacts_mutex, &next_time);
+    pthread_cond_timedwait(&program_timeout_cond, &recent_contacts_mutex, &next_time);
     recent_contacts[cur_macaddress_time_obj->cur_macaddress.value] -= 1;
     free(macaddress_time_obj);
-    pthread_mutex_unlock(&contacts_mutex);
+    pthread_mutex_unlock(&recent_contacts_mutex);
     return NULL;
 }
 
-void *orchestrator_new_macaddress_thread_func()
+void *close_contact_thread_func(void *macaddress_time_obj)
 {
-    pthread_mutex_lock(&orchestrator_mutex);
-    if (pt_new_mac.empty)
+    pthread_mutex_lock(&recent_contacts_mutex);
+    // The following 2 pointers are used because macaddress_time_obj may have its memory freed from new_macaddress_thread_func
+    // (Although it's highly unlikely that the thread isn't active for 20 minutes)
+    macaddress_time *cur_macaddress_time_obj = malloc(sizeof(macaddress_time));
+    macaddress_time *arg_macaddress_time_obj = (macaddress_time*) macaddress_time_obj;
+    cur_macaddress_time_obj->cur_macaddress.value = arg_macaddress_time_obj->cur_macaddress.value;
+    cur_macaddress_time_obj->timestamp = arg_macaddress_time_obj->timestamp;
+    pthread_mutex_unlock(&recent_contacts_mutex);
+    struct timespec delete_contact_time;
+    pthread_mutex_lock(&close_contacts_mutex);
+    if (program_ended)
     {
-        pthread_cond_wait(&pt_not_empty_cond, &orchestrator_mutex);
+        free(cur_macaddress_time_obj);
+        pthread_mutex_unlock(&close_contacts_mutex);
+        return NULL;
     }
-    pthread_mutex_unlock(&orchestrator_mutex);
+    // Save to close contacts
+    close_contacts[cur_macaddress_time_obj->cur_macaddress.value] += 1;
+    // Delete from close contacts
+    timespec_add(&(cur_macaddress_time_obj->timestamp), &forget_contacts, &delete_contact_time);
+    pthread_cond_timedwait(&program_timeout_cond, &close_contacts_mutex, &delete_contact_time);
+    close_contacts[cur_macaddress_time_obj->cur_macaddress.value] -= 1;
+    free(macaddress_time_obj);
+    pthread_mutex_unlock(&close_contacts_mutex);
+    return NULL;
+}
+
+void *thread_joiner_thread_func(void *queue)
+{
+    pthread_queue *pt_queue = (pthread_queue *)queue;
+    pthread_mutex_lock(&(pt_queue->mut));
+    if (pt_queue->empty)
+    {
+        pthread_cond_wait(&(pt_queue->not_empty_cond), &(pt_queue->mut));
+    }
+    pthread_mutex_unlock(&(pt_queue->mut));
     while (1)
     {
-        pthread_join(pt_new_mac.pt_buf[pt_new_mac.head], NULL);
-        pthread_mutex_lock(&orchestrator_mutex);
-        pt_new_mac.head = (pt_new_mac.head + 1) % MAX_CONCURRENT_BTNEARME;
-        if (pt_new_mac.head == pt_new_mac.tail)
+        pthread_join(pt_queue->pt_buf[pt_queue->head], NULL);
+        pthread_mutex_lock(&(pt_queue->mut));
+        if (program_ended)
         {
-            pt_new_mac.empty = true;
-            pthread_cond_wait(&pt_not_empty_cond, &orchestrator_mutex);
-            if (program_ended)
-            {
-                pthread_mutex_unlock(&orchestrator_mutex);
-                return NULL;
-            }
+            pthread_mutex_unlock(&(pt_queue->mut));
+            return NULL;
         }
-        pthread_mutex_unlock(&orchestrator_mutex);
+        pt_queue->head = (pt_queue->head + 1) % MAX_CONCURRENT_BTNEARME;
+        if (pt_queue->head == pt_queue->tail)
+        {
+            pt_queue->empty = true;
+            pthread_cond_wait(&(pt_queue->not_empty_cond), &(pt_queue->mut));
+        }
+        pthread_mutex_unlock(&(pt_queue->mut));
     }
 }
 
-void *BTnearMe_thread_func()
+void *BTnearMe_thread_func(void *queues)
 {
+    pthread_queue *pt_new_mac = ((two_queues *)queues)->new_mac_queue;
+    pthread_queue *pt_close_contacts = ((two_queues *)queues)->close_contacts_queue;
     // Run 0 should occur immediately, so next_BTnearMe_time is initialized as program_start_time
     struct timespec next_BTnearMe_time = program_start_time;
     macaddress_time *macaddress_time_obj;
-    pthread_mutex_lock(&contacts_mutex);
+    pthread_mutex_lock(&recent_contacts_mutex);
     while (1)
     {
-        // thread waits until program shutdown signal or the search interval has passed
-        pthread_cond_timedwait(&program_timeout_cond, &contacts_mutex, &next_BTnearMe_time);
+        // Thread waits until program shutdown signal or until the search interval has passed
+        pthread_cond_timedwait(&program_timeout_cond, &recent_contacts_mutex, &next_BTnearMe_time);
         if (program_ended)
         {
             return NULL;
@@ -307,18 +336,26 @@ void *BTnearMe_thread_func()
         macaddress_time_obj = BTnearMe();
         if (recent_contacts[macaddress_time_obj->cur_macaddress.value] > 0)
         {
-            close_contacts[macaddress_time_obj->cur_macaddress.value] += 1;
+            pthread_create(&(pt_close_contacts->pt_buf[pt_close_contacts->tail]), NULL, close_contact_thread_func, macaddress_time_obj);
+            pthread_mutex_lock(&(pt_close_contacts->mut));
+            pt_close_contacts->tail = (pt_close_contacts->tail + 1) % MAX_CONCURRENT_CLOSE_CONTACTS;
+            if (pt_close_contacts->empty)
+            {
+                pt_close_contacts->empty = false;
+                pthread_cond_signal(&(pt_close_contacts->not_empty_cond));
+            }
+            pthread_mutex_unlock(&(pt_close_contacts->mut));
         }
-        pthread_create(&pt_new_mac.pt_buf[pt_new_mac.tail], NULL, new_macaddress_thread_func, macaddress_time_obj);
+        pthread_create(&(pt_new_mac->pt_buf[pt_new_mac->tail]), NULL, new_macaddress_thread_func, macaddress_time_obj);
         timespec_add(&search_interval, &next_BTnearMe_time, &next_BTnearMe_time);
-        pthread_mutex_lock(&orchestrator_mutex);
-        pt_new_mac.tail = (pt_new_mac.tail + 1) % MAX_CONCURRENT_BTNEARME;
-        if (pt_new_mac.empty)
+        pthread_mutex_lock(&(pt_new_mac->mut));
+        pt_new_mac->tail = (pt_new_mac->tail + 1) % MAX_CONCURRENT_BTNEARME;
+        if (pt_new_mac->empty)
         {
-            pt_new_mac.empty = false;
-            pthread_cond_signal(&pt_not_empty_cond);
+            pt_new_mac->empty = false;
+            pthread_cond_signal(&(pt_new_mac->not_empty_cond));
         }
-        pthread_mutex_unlock(&orchestrator_mutex);
+        pthread_mutex_unlock(&(pt_new_mac->mut));
     }
 }
 
@@ -347,17 +384,62 @@ void uploadContacts()
     fclose(fp);
 }
 
+void *testCovid_thread_func(void *queue)
+{
+    pthread_queue *pt_close_contacts = (pthread_queue *) queue;
+    struct timespec next_testCovid_time = program_start_time;
+    pthread_mutex_lock(&(pt_close_contacts->mut));
+    while (1)
+    {
+        timespec_add(&next_testCovid_time, &test_interval, &next_testCovid_time);
+        pthread_cond_timedwait(&program_timeout_cond, &(pt_close_contacts->mut), &next_testCovid_time);
+        if (program_ended)
+        {
+            return NULL;
+        }
+        if (testCovid())
+        {
+            uploadContacts();
+        }
+    }
+}
+
+void *program_timeout_thread_func(void *queues)
+{
+    two_queues *pt_queues = (two_queues *) queues; 
+    sleep(sec_program_timeout);
+
+    pthread_mutex_lock(&recent_contacts_mutex);
+    pthread_mutex_lock(&close_contacts_mutex);
+    pthread_mutex_lock(&(pt_queues->close_contacts_queue->mut));
+    pthread_mutex_lock(&(pt_queues->new_mac_queue->mut));
+
+    pthread_cond_broadcast(&program_timeout_cond);
+    pthread_cond_signal(&(pt_queues->close_contacts_queue->not_empty_cond));
+    pthread_cond_signal(&(pt_queues->new_mac_queue->not_empty_cond));
+
+    pthread_mutex_unlock(&recent_contacts_mutex);
+    pthread_mutex_unlock(&close_contacts_mutex);
+    pthread_mutex_unlock(&(pt_queues->close_contacts_queue->mut));
+    pthread_mutex_unlock(&(pt_queues->new_mac_queue->mut));
+
+    return NULL;
+}
 void pthread_queue_init(size_t buffer_size, pthread_queue *pt_queue)
 {
-    pt_queue->pt_buf = malloc(buffer_size);
+    pt_queue->pt_buf = malloc(buffer_size * sizeof(pthread_t));
     pt_queue->head = 0;
     pt_queue->tail = 0;
     pt_queue->empty = true;
+    pthread_mutex_init(&(pt_queue->mut), NULL);
+    pthread_cond_init(&(pt_queue->not_empty_cond), NULL);
 }
 
 void pthread_queue_delete(pthread_queue *pt_queue)
 {
     free(pt_queue->pt_buf);
+    pthread_mutex_destroy(&(pt_queue->mut));
+    pthread_cond_destroy(&(pt_queue->not_empty_cond));
 }
 
 int main()
@@ -369,20 +451,40 @@ int main()
     forget_recent = seconds_to_timespec(sec_forget_recent);
     forget_contacts = seconds_to_timespec(sec_forget_contacts);
     test_interval = seconds_to_timespec(sec_test_interval);
-    program_timeout = seconds_to_timespec(sec_program_timeout);
 
     init_macaddress_list();
 
-    pthread_queue_init(MAX_BTNEARME_CALLS * sizeof(pthread_t), &pt_new_mac);
-    pthread_queue_init(MAX_CLOSE_CONTACTS * sizeof(pthread_t), &pt_close_contacts);
+    pthread_queue *pt_new_mac;
+    pthread_queue *pt_close_contacts;
+    
+    two_queues *queues;
+    queues = malloc(2*sizeof(two_queues));
+    queues->new_mac_queue = pt_new_mac;
+    queues->close_contacts_queue = pt_close_contacts;
 
-    pthread_t BTnearMe_t;
-    pthread_t testCovid_t;
-    pthread_t uploadContacts_t;
-    pthread_t update_contacts_t;
+    pthread_queue_init(MAX_CONCURRENT_BTNEARME, pt_new_mac);
+    pthread_queue_init(MAX_CONCURRENT_CLOSE_CONTACTS, pt_close_contacts);
+
+    pthread_t BTnearMe_thread;
+    pthread_t joiner_new_macaddresses_thread;
+    pthread_t joiner_close_contacts_thread;
+    pthread_t testCOVID_thread;
+    pthread_t program_timeout_thread;
+
+    pthread_create(&BTnearMe_thread, NULL, BTnearMe_thread_func, queues);
+    pthread_create(&joiner_new_macaddresses_thread, NULL, thread_joiner_thread_func, pt_new_mac);
+    pthread_create(&joiner_close_contacts_thread, NULL, thread_joiner_thread_func, pt_close_contacts);
+    pthread_create(&testCOVID_thread, NULL, testCovid_thread_func, pt_close_contacts);
+
+    pthread_join(BTnearMe_thread, NULL);
+    pthread_join(joiner_new_macaddresses_thread, NULL);
+    pthread_join(joiner_close_contacts_thread, NULL);
+    pthread_join(testCOVID_thread, NULL);
+    pthread_join(program_timeout_thread, NULL);
 
     pthread_queue_delete(&pt_new_mac);
     pthread_queue_delete(&pt_close_contacts);
+    free(queues);
     
     return 0;
 }
