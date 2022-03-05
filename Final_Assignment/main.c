@@ -414,6 +414,7 @@ void *program_timeout_thread_func(void *queues)
     pthread_mutex_lock(&(pt_queues->close_contacts_queue->mut));
     pthread_mutex_lock(&(pt_queues->new_mac_queue->mut));
 
+    program_ended = true;
     pthread_cond_broadcast(&program_timeout_cond);
     pthread_cond_signal(&(pt_queues->close_contacts_queue->not_empty_cond));
     pthread_cond_signal(&(pt_queues->new_mac_queue->not_empty_cond));
