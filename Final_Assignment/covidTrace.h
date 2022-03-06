@@ -57,6 +57,7 @@ typedef struct
 {
     pthread_t *pt_buf;
     uint16_t head, tail;
+    size_t max_size;
     bool empty;
     pthread_mutex_t mut;
     pthread_cond_t not_empty_cond;

@@ -243,7 +243,7 @@ void *thread_joiner_thread_func(void *queue)
     {
         pthread_join(pt_queue->pt_buf[pt_queue->head], NULL);
         pthread_mutex_lock(&(pt_queue->mut));
-        pt_queue->head = (pt_queue->head + 1) % MAX_CONCURRENT_BTNEARME;
+        pt_queue->head = (pt_queue->head + 1) % pt_queue->max_size;
         if (pt_queue->head == pt_queue->tail)
         {
             if (program_ended)
@@ -285,7 +285,7 @@ void *BTnearMe_thread_func(void *queues)
         {
             pthread_create(&(pt_close_contacts->pt_buf[pt_close_contacts->tail]), NULL, close_contact_thread_func, macaddress_time_obj);
             pthread_mutex_lock(&(pt_close_contacts->mut));
-            pt_close_contacts->tail = (pt_close_contacts->tail + 1) % MAX_CONCURRENT_CLOSE_CONTACTS;
+            pt_close_contacts->tail = (pt_close_contacts->tail + 1) % pt_close_contacts->max_size;
             if (pt_close_contacts->empty)
             {
                 pt_close_contacts->empty = false;
@@ -296,7 +296,7 @@ void *BTnearMe_thread_func(void *queues)
         pthread_create(&(pt_new_mac->pt_buf[pt_new_mac->tail]), NULL, new_macaddress_thread_func, macaddress_time_obj);
         timespec_add(&search_interval, &next_BTnearMe_time, &next_BTnearMe_time);
         pthread_mutex_lock(&(pt_new_mac->mut));
-        pt_new_mac->tail = (pt_new_mac->tail + 1) % MAX_CONCURRENT_BTNEARME;
+        pt_new_mac->tail = (pt_new_mac->tail + 1) % pt_new_mac->max_size;
         if (pt_new_mac->empty)
         {
             pt_new_mac->empty = false;
@@ -395,6 +395,7 @@ void pthread_queue_init(size_t buffer_size, pthread_queue *pt_queue)
     pt_queue->pt_buf = (pthread_t *)malloc(buffer_size * sizeof(pthread_t));
     pt_queue->head = 0;
     pt_queue->tail = 0;
+    pt_queue->max_size = buffer_size;
     pt_queue->empty = true;
     pthread_mutex_init(&(pt_queue->mut), NULL);
     pthread_cond_init(&(pt_queue->not_empty_cond), NULL);
