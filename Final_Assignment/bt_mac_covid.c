@@ -123,7 +123,7 @@ bool testCOVID()
     // Get a random positive (10%) or negative(90%) covid test
     float res = (rand() % 10001) / 10000.0;
     bool test_res;
-    test_res = res <= 0.4 ? true : false;
+    test_res = res <= COVID_POSITIVE_RATE ? true : false;
 
     // Save info to history
     if(testCovid_history_index < MAX_TESTCOVID_CALLS)

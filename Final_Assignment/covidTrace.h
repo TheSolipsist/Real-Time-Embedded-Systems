@@ -3,6 +3,7 @@
 #define MAX_CONCURRENT_CLOSE_CONTACTS 150000 // Max number of possible concurrent threads for close contacts (including duplicates)
 #define MAX_BTNEARME_CALLS 300000
 #define MAX_TESTCOVID_CALLS 500
+#define COVID_POSITIVE_RATE 0.4
 
 // Time interval parameters
 const double speed_factor = 0.01; // The code will run (1 / speed_factor) times faster (0.01 -> 100x)
