@@ -387,7 +387,6 @@ void *program_timeout_thread_func(void *queues)
     pthread_mutex_destroy(&fakeMutex);
     pthread_cond_destroy(&fakeCond);
     
-    printf("Program finishing\n");
     return NULL;
 }
 void pthread_queue_init(size_t buffer_size, pthread_queue *pt_queue)
