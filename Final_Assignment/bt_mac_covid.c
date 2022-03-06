@@ -6,12 +6,7 @@
 #include <time.h>
 #include <inttypes.h>
 #include <stdbool.h>
-
-#define N_MACADDRESSES 500 // If a much larger number is required, check the data type of random_index in BTnearMe()
-#define MAX_CONCURRENT_BTNEARME 5000 // Max number of possible concurrent threads for new macaddresses
-#define MAX_CONCURRENT_CLOSE_CONTACTS 150000 // Max number of possible concurrent threads for close contacts (including duplicates)
-#define MAX_BTNEARME_CALLS 300000
-#define MAX_TESTCOVID_CALLS 500
+#include "covidTrace.h"
 
 #define SEC_PER_DAY 86400
 #define SEC_PER_HOUR 3600
@@ -24,71 +19,6 @@ struct timespec seconds_to_timespec(float seconds)
     result.tv_nsec = (int)(1E9 * (seconds - result.tv_sec));
     return result;
 }
-
-// Time interval parameters
-const double speed_factor = 0.01; // The code will run (1 / speed_factor) times faster (0.01 -> 100x)
-const double sec_search_interval = 10 * speed_factor;
-const double sec_save_recent = 1 * 60 * speed_factor;
-const double sec_forget_recent = 20 * 60 * speed_factor;
-const double sec_forget_contacts = 1 * 2 * 60 * 60 * speed_factor;
-const double sec_test_interval = 1 * 1 * 30 * 60 * speed_factor;
-const double sec_program_timeout = 1 * 5 * 60 * 60 * speed_factor;
-
-// struct timespec variables that correspond to the above parameters, initialized in main()
-struct timespec search_interval;
-struct timespec save_recent;
-struct timespec forget_recent;
-struct timespec forget_contacts;
-struct timespec test_interval;
-struct timespec program_timeout;
-
-typedef struct
-{
-    uint64_t value : 48;
-} macaddress;
-
-typedef struct 
-{
-    // hh:mm:ss:nnnnnnnnn
-    int hours;
-    int mins;
-    int secs;
-    long nanosecs;
-} time_format;
-
-typedef struct
-{
-    macaddress cur_macaddress;
-    struct timespec timestamp;
-} macaddress_time;
-
-typedef struct
-{
-    macaddress generated_macaddress; 
-    struct timespec macaddress_time;
-} btnearme_history_struct;
-
-typedef struct
-{
-    bool testCovidResult;
-    struct timespec testCovid_time;
-} testCovid_history_struct;
-
-typedef struct
-{
-    pthread_t *pt_buf;
-    uint16_t head, tail;
-    bool empty;
-    pthread_mutex_t mut;
-    pthread_cond_t not_empty_cond;
-    char name;
-} pthread_queue;
-
-typedef struct
-{
-    pthread_queue *new_mac_queue;
-    pthread_queue *close_contacts_queue;
-} two_queues;
 
 macaddress macaddress_list[N_MACADDRESSES];
 btnearme_history_struct *btnearme_history;
@@ -132,7 +62,8 @@ void timespec_add(struct timespec *a, struct timespec *b, struct timespec *resul
     }
 }
 
-void timespec_to_time_format(struct timespec timestamp, time_format *converted_timestamp) {
+void timespec_to_time_format(struct timespec timestamp, time_format *converted_timestamp)
+{
     // Form the seconds of the day
     long hms = timestamp.tv_sec % SEC_PER_DAY;
     // mod `hms` to ensure it is in positive range of [0...SEC_PER_DAY)
@@ -217,7 +148,7 @@ void write_history()
     // Writes the info from btnearme_history and testCovid_history to files
     // Write BTnearMe history
     FILE *ptr1;
-    ptr1 = fopen("btnearme_history.bin", "ab");
+    ptr1 = fopen("btnearme_history", "wb");
     for(int i = 0; i < btnearme_history_index; i++)
     {   
         time_format converted_time;        
@@ -228,7 +159,7 @@ void write_history()
 
     // Write testCOVID history
     FILE *ptr2;
-    ptr2 = fopen("testcovid_history.bin", "ab");
+    ptr2 = fopen("testcovid_history", "wb");
     for(int i = 0; i < testCovid_history_index; i++)
     { 
         time_format converted_time;        
@@ -387,7 +318,7 @@ void uploadContacts()
     // Write timestamp
     time_format converted_time;
     timespec_to_time_format(time_from_start, &converted_time);
-    fp = fopen("upload_contacts.bin","ab");
+    fp = fopen("upload_contacts","ab");
     fprintf(fp, "(%02d:%02d:%02d.%09ld) ", converted_time.hours, converted_time.mins, converted_time.secs, converted_time.nanosecs);
     // Write close contacts
     for(int i = 0; i < N_MACADDRESSES; i++)
@@ -480,6 +411,11 @@ int main()
 {
     srand(time(NULL));
 
+    // If the upload_contacts file already exists, discard its contents
+    FILE *fp;
+    fp = fopen("upload_contacts","wb");
+    fclose(fp);
+
     search_interval = seconds_to_timespec(sec_search_interval);
     save_recent = seconds_to_timespec(sec_save_recent);
     forget_recent = seconds_to_timespec(sec_forget_recent);
@@ -499,8 +435,6 @@ int main()
 
     pthread_queue_init(MAX_CONCURRENT_BTNEARME, pt_new_mac);
     pthread_queue_init(MAX_CONCURRENT_CLOSE_CONTACTS, pt_close_contacts);
-    pt_new_mac->name = 'M';
-    pt_close_contacts->name = 'C';
 
     queues = malloc(sizeof(two_queues));
     queues->new_mac_queue = pt_new_mac;
