@@ -1,4 +1,4 @@
-#define N_MACADDRESSES 500 // If a much larger number is required, check the data type of random_index in BTnearMe()
+#define N_MACADDRESSES 5000 // If a much larger number is required, check the data type of random_index in BTnearMe()
 #define MAX_CONCURRENT_BTNEARME 5000 // Max number of possible concurrent threads for new macaddresses
 #define MAX_CONCURRENT_CLOSE_CONTACTS 150000 // Max number of possible concurrent threads for close contacts (including duplicates)
 #define MAX_BTNEARME_CALLS 300000
