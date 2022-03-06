@@ -7,7 +7,7 @@
 #include <inttypes.h>
 #include <stdbool.h>
 
-#define N_MACADDRESSES 2000 // If a much larger number is required, check the data type of random_index in BTnearMe()
+#define N_MACADDRESSES 200 // If a much larger number is required, check the data type of random_index in BTnearMe()
 #define MAX_CONCURRENT_BTNEARME 5000 // Max number of possible concurrent threads for new macaddresses
 #define MAX_CONCURRENT_CLOSE_CONTACTS 150000 // Max number of possible concurrent threads for close contacts (including duplicates)
 #define MAX_BTNEARME_CALLS 300000
@@ -28,11 +28,11 @@ struct timespec seconds_to_timespec(float seconds)
 // Time interval parameters
 const double speed_factor = 0.01; // The code will run (1 / speed_factor) times faster (0.01 -> 100x)
 const double sec_search_interval = 10 * speed_factor;
-const double sec_save_recent = 4 * 60 * speed_factor;
+const double sec_save_recent = 1 * 60 * speed_factor;
 const double sec_forget_recent = 20 * 60 * speed_factor;
-const double sec_forget_contacts = 1 * 24 * 60 * 60 * speed_factor;
-const double sec_test_interval = 4 * 60 * 60 * speed_factor;
-const double sec_program_timeout = 2.2 * 24 * 60 * 60 * speed_factor;
+const double sec_forget_contacts = 1 * 2 * 60 * 60 * speed_factor;
+const double sec_test_interval = 1 * 1 * 30 * 60 * speed_factor;
+const double sec_program_timeout = 1 * 5 * 60 * 60 * speed_factor;
 
 // struct timespec variables that correspond to the above parameters, initialized in main()
 struct timespec search_interval;
@@ -40,6 +40,7 @@ struct timespec save_recent;
 struct timespec forget_recent;
 struct timespec forget_contacts;
 struct timespec test_interval;
+struct timespec program_timeout;
 
 typedef struct
 {
@@ -159,24 +160,29 @@ void init_macaddress_list()
 
 macaddress_time *BTnearMe()
 {
-    macaddress_time *newBT = malloc(sizeof(macaddress_time));
+    macaddress_time newBT;
+    macaddress_time *result;
+    result = malloc(sizeof(macaddress_time));
     // Get a random macaddress from macaddress_list
     uint16_t random_index = rand() % N_MACADDRESSES;
     struct timespec current_time;
-    clock_gettime(CLOCK_MONOTONIC, &current_time);
-    timespec_diff(&current_time, &program_start_time, &(newBT->timestamp));
-    newBT->cur_macaddress = macaddress_list[random_index];
+    clock_gettime(CLOCK_REALTIME, &current_time);
+    timespec_diff(&current_time, &program_start_time, &(newBT.timestamp));
+    newBT.cur_macaddress = macaddress_list[random_index];
+    result->timestamp = current_time;
+    result->cur_macaddress = newBT.cur_macaddress;
     // Save info to history
     if(btnearme_history_index < MAX_BTNEARME_CALLS)
     {
-        btnearme_history[btnearme_history_index].macaddress_time = newBT->timestamp;
-        btnearme_history[btnearme_history_index++].generated_macaddress = newBT->cur_macaddress;
+        btnearme_history[btnearme_history_index].macaddress_time = newBT.timestamp;
+        btnearme_history[btnearme_history_index++].generated_macaddress = newBT.cur_macaddress;
     }
     else
     {
         printf("overflow in btnearme_history");
+        fflush(stdout);
     }
-    return newBT;
+    return result;
 }
 
 
@@ -192,7 +198,7 @@ bool testCOVID()
     {
         // Time from the start of the program
         struct timespec current_time;
-        clock_gettime(CLOCK_MONOTONIC, &current_time);
+        clock_gettime(CLOCK_REALTIME, &current_time);
         timespec_diff(&current_time, &program_start_time, &(testCovid_history[testCovid_history_index].testCovid_time));
         // Test result
         testCovid_history[testCovid_history_index++].testCovidResult = test_res;
@@ -200,6 +206,7 @@ bool testCOVID()
     else
     {
         printf("Overflow in testCovid_history\n");
+        fflush(stdout);
     }
     return test_res;
 }
@@ -232,6 +239,9 @@ void write_history()
 
 void *new_macaddress_thread_func(void *macaddress_time_obj)
 {
+    printf("SPAWNED : MACADDRESS THREAD\n");
+    fflush(stdout);
+
     macaddress_time *cur_macaddress_time_obj = (macaddress_time*)macaddress_time_obj;
     struct timespec next_time;
     pthread_mutex_lock(&recent_contacts_mutex);
@@ -257,11 +267,18 @@ void *new_macaddress_thread_func(void *macaddress_time_obj)
     recent_contacts[cur_macaddress_time_obj->cur_macaddress.value] -= 1;
     free(macaddress_time_obj);
     pthread_mutex_unlock(&recent_contacts_mutex);
+
+    printf("RETURNED : MACADDRESS THREAD\n");
+    fflush(stdout);
+
     return NULL;
 }
 
 void *close_contact_thread_func(void *macaddress_time_obj)
 {
+    printf("SPAWNED : CLOSE CONTACT THREAD\n");
+    fflush(stdout);
+
     pthread_mutex_lock(&recent_contacts_mutex);
     // The following 2 pointers are used because macaddress_time_obj may have its memory freed from new_macaddress_thread_func
     // (Although it's highly unlikely that the thread isn't active for 20 minutes)
@@ -284,8 +301,12 @@ void *close_contact_thread_func(void *macaddress_time_obj)
     timespec_add(&(cur_macaddress_time_obj->timestamp), &forget_contacts, &delete_contact_time);
     pthread_cond_timedwait(&program_timeout_cond, &close_contacts_mutex, &delete_contact_time);
     close_contacts[cur_macaddress_time_obj->cur_macaddress.value] -= 1;
-    free(macaddress_time_obj);
+    free(cur_macaddress_time_obj);
     pthread_mutex_unlock(&close_contacts_mutex);
+
+    printf("RETURNED : CLOSE CONTACT THREAD\n");
+    fflush(stdout);
+
     return NULL;
 }
 
@@ -364,7 +385,7 @@ void uploadContacts()
     FILE *fp;
     // Time from the start of the program
     struct timespec current_time;
-    clock_gettime(CLOCK_MONOTONIC, &current_time);
+    clock_gettime(CLOCK_REALTIME, &current_time);
     struct timespec time_from_start;
     timespec_diff(&current_time, &program_start_time, &time_from_start);
 
@@ -381,6 +402,7 @@ void uploadContacts()
             fprintf(fp, "%" PRIu64 ",", macaddress_list[i].value);
         } 
     }
+    fprintf(fp, "\n");
     fclose(fp);
 }
 
@@ -408,8 +430,15 @@ void *testCovid_thread_func(void *queue)
 
 void *program_timeout_thread_func(void *queues)
 {
+    pthread_mutex_t fakeMutex;
+    pthread_cond_t fakeCond;
+    pthread_mutex_init(&fakeMutex, NULL);
+    pthread_cond_init(&fakeCond, NULL);
+    struct timespec program_end_time;
+    timespec_add(&program_start_time, &program_timeout, &program_end_time);
+
     two_queues *pt_queues = (two_queues *) queues; 
-    sleep(sec_program_timeout);
+    pthread_cond_timedwait(&fakeCond, &fakeMutex, &program_end_time);
 
     pthread_mutex_lock(&recent_contacts_mutex);
     pthread_mutex_lock(&close_contacts_mutex);
@@ -426,6 +455,8 @@ void *program_timeout_thread_func(void *queues)
     pthread_mutex_unlock(&(pt_queues->close_contacts_queue->mut));
     pthread_mutex_unlock(&(pt_queues->new_mac_queue->mut));
 
+    pthread_mutex_destroy(&fakeMutex);
+    pthread_cond_destroy(&fakeCond);
     return NULL;
 }
 void pthread_queue_init(size_t buffer_size, pthread_queue *pt_queue)
@@ -454,6 +485,7 @@ int main()
     forget_recent = seconds_to_timespec(sec_forget_recent);
     forget_contacts = seconds_to_timespec(sec_forget_contacts);
     test_interval = seconds_to_timespec(sec_test_interval);
+    program_timeout = seconds_to_timespec(sec_program_timeout);
 
     init_macaddress_list();
 
@@ -477,6 +509,8 @@ int main()
     pthread_t joiner_close_contacts_thread;
     pthread_t testCOVID_thread;
     pthread_t program_timeout_thread;
+
+    clock_gettime(CLOCK_REALTIME, &program_start_time);
 
     pthread_create(&BTnearMe_thread, NULL, BTnearMe_thread_func, queues);
     pthread_create(&joiner_new_macaddresses_thread, NULL, thread_joiner_thread_func, pt_new_mac);
