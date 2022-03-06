@@ -7,7 +7,7 @@
 #include <inttypes.h>
 #include <stdbool.h>
 
-#define N_MACADDRESSES 200 // If a much larger number is required, check the data type of random_index in BTnearMe()
+#define N_MACADDRESSES 500 // If a much larger number is required, check the data type of random_index in BTnearMe()
 #define MAX_CONCURRENT_BTNEARME 5000 // Max number of possible concurrent threads for new macaddresses
 #define MAX_CONCURRENT_CLOSE_CONTACTS 150000 // Max number of possible concurrent threads for close contacts (including duplicates)
 #define MAX_BTNEARME_CALLS 300000
@@ -81,6 +81,7 @@ typedef struct
     bool empty;
     pthread_mutex_t mut;
     pthread_cond_t not_empty_cond;
+    char name;
 } pthread_queue;
 
 typedef struct
@@ -179,7 +180,7 @@ macaddress_time *BTnearMe()
     }
     else
     {
-        printf("overflow in btnearme_history");
+        printf("Overflow in btnearme_history");
         fflush(stdout);
     }
     return result;
@@ -239,9 +240,6 @@ void write_history()
 
 void *new_macaddress_thread_func(void *macaddress_time_obj)
 {
-    printf("SPAWNED : MACADDRESS THREAD\n");
-    fflush(stdout);
-
     macaddress_time *cur_macaddress_time_obj = (macaddress_time*)macaddress_time_obj;
     struct timespec next_time;
     pthread_mutex_lock(&recent_contacts_mutex);
@@ -268,20 +266,14 @@ void *new_macaddress_thread_func(void *macaddress_time_obj)
     free(macaddress_time_obj);
     pthread_mutex_unlock(&recent_contacts_mutex);
 
-    printf("RETURNED : MACADDRESS THREAD\n");
-    fflush(stdout);
-
     return NULL;
 }
 
 void *close_contact_thread_func(void *macaddress_time_obj)
 {
-    printf("SPAWNED : CLOSE CONTACT THREAD\n");
-    fflush(stdout);
-
     pthread_mutex_lock(&recent_contacts_mutex);
     // The following 2 pointers are used because macaddress_time_obj may have its memory freed from new_macaddress_thread_func
-    // (Although it's highly unlikely that the thread isn't active for 20 minutes)
+    // (Although it's highly unlikely that the thread won't be active for 20 minutes)
     macaddress_time *cur_macaddress_time_obj = malloc(sizeof(macaddress_time));
     macaddress_time *arg_macaddress_time_obj = (macaddress_time*) macaddress_time_obj;
     cur_macaddress_time_obj->cur_macaddress.value = arg_macaddress_time_obj->cur_macaddress.value;
@@ -304,9 +296,6 @@ void *close_contact_thread_func(void *macaddress_time_obj)
     free(cur_macaddress_time_obj);
     pthread_mutex_unlock(&close_contacts_mutex);
 
-    printf("RETURNED : CLOSE CONTACT THREAD\n");
-    fflush(stdout);
-
     return NULL;
 }
 
@@ -323,16 +312,21 @@ void *thread_joiner_thread_func(void *queue)
     {
         pthread_join(pt_queue->pt_buf[pt_queue->head], NULL);
         pthread_mutex_lock(&(pt_queue->mut));
-        if (program_ended)
-        {
-            pthread_mutex_unlock(&(pt_queue->mut));
-            return NULL;
-        }
         pt_queue->head = (pt_queue->head + 1) % MAX_CONCURRENT_BTNEARME;
         if (pt_queue->head == pt_queue->tail)
         {
+            if (program_ended)
+            {
+                pthread_mutex_unlock(&(pt_queue->mut));
+                return NULL;
+            }
             pt_queue->empty = true;
             pthread_cond_wait(&(pt_queue->not_empty_cond), &(pt_queue->mut));
+            if (program_ended)
+            {
+                pthread_mutex_unlock(&(pt_queue->mut));
+                return NULL;
+            }
         }
         pthread_mutex_unlock(&(pt_queue->mut));
     }
@@ -352,6 +346,7 @@ void *BTnearMe_thread_func(void *queues)
         pthread_cond_timedwait(&program_timeout_cond, &recent_contacts_mutex, &next_BTnearMe_time);
         if (program_ended)
         {
+            pthread_mutex_unlock(&recent_contacts_mutex);
             return NULL;
         }
         macaddress_time_obj = BTnearMe();
@@ -418,6 +413,7 @@ void *testCovid_thread_func(void *queue)
         pthread_cond_timedwait(&program_timeout_cond, &(pt_close_contacts->mut), &next_testCovid_time);
         if (program_ended)
         {
+            pthread_mutex_unlock(&(pt_close_contacts->mut));
             return NULL;
         }
         result = testCOVID();
@@ -437,8 +433,10 @@ void *program_timeout_thread_func(void *queues)
     struct timespec program_end_time;
     timespec_add(&program_start_time, &program_timeout, &program_end_time);
 
-    two_queues *pt_queues = (two_queues *) queues; 
+    two_queues *pt_queues = (two_queues *) queues;
+    pthread_mutex_lock(&fakeMutex);
     pthread_cond_timedwait(&fakeCond, &fakeMutex, &program_end_time);
+    pthread_mutex_unlock(&fakeMutex);
 
     pthread_mutex_lock(&recent_contacts_mutex);
     pthread_mutex_lock(&close_contacts_mutex);
@@ -457,6 +455,8 @@ void *program_timeout_thread_func(void *queues)
 
     pthread_mutex_destroy(&fakeMutex);
     pthread_cond_destroy(&fakeCond);
+    
+    printf("Program finishing\n");
     return NULL;
 }
 void pthread_queue_init(size_t buffer_size, pthread_queue *pt_queue)
@@ -499,6 +499,8 @@ int main()
 
     pthread_queue_init(MAX_CONCURRENT_BTNEARME, pt_new_mac);
     pthread_queue_init(MAX_CONCURRENT_CLOSE_CONTACTS, pt_close_contacts);
+    pt_new_mac->name = 'M';
+    pt_close_contacts->name = 'C';
 
     queues = malloc(sizeof(two_queues));
     queues->new_mac_queue = pt_new_mac;
