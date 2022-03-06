@@ -18,10 +18,13 @@ history_data = binfile_to_np_array("btnearme_history")
 expected_data = binfile_to_np_array("btnearme_expected")
 
 error_data = history_data - expected_data
+x_data = list(range(len(error_data)))
 
 plt.title("BTnearMe execution time delay")
 plt.ylabel("Delay in BTnearMe execution (nanosec)")
 plt.xlabel("Time (search interval = 0.1 sec)")
-plt.plot(error_data)
-plt.plot(np.ones_like(error_data) * error_data.mean(), color="yellow", linestyle="dashed")
+plt.plot(x_data, error_data, label="data", zorder=2.5)
+plt.plot(np.ones_like(error_data) * error_data.mean(), color="yellow", linestyle="dashed", linewidth=1.5, label="mean", zorder=2.5)
+plt.fill_between(x_data, error_data.mean() + error_data.std(), error_data.mean() - error_data.std(), color="gold", alpha = 0.25, zorder=2.5, label="standard deviation")
+plt.legend()
 plt.savefig("btnearme_delay.png", dpi=200)
